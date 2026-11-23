@@ -44,12 +44,34 @@ app.add_middleware(
 )
 
 
+def _start_exit_watcher():
+    """Apply options paper-trade exit rules every 3 minutes while the market is open,
+    so exits fire even when no browser tab is open. Works as long as the backend is awake
+    (see .github/workflows/keepalive.yml). Does nothing without DATABASE_URL."""
+    import threading
+    import time
+
+    def loop():
+        from app.db import get_database_url
+        from app.routers import options, options_trades
+        while True:
+            time.sleep(180)
+            try:
+                if get_database_url() and options.market_open_now():
+                    options_trades.evaluate_open_trades()
+            except Exception:
+                pass  # never let the watcher die; the next cycle retries
+
+    threading.Thread(target=loop, daemon=True, name="options-exit-watcher").start()
+
+
 @app.on_event("startup")
 def on_startup():
     # Safe to call even if DATABASE_URL isn't set yet — it just no-ops
     # and prediction/paper-trade logging will 503 with a clear message
     # until it is.
     init_db()
+    _start_exit_watcher()
 
 
 app.include_router(prices.router, prefix="/api/prices", tags=["prices"])
