@@ -1,7 +1,7 @@
 """
 SwingIntel backend — FastAPI entrypoint.
 
-Nine routers:
+Eleven routers:
   /api/prices        -> live/quote data + short interest (yfinance, no key)
   /api/markets       -> Polymarket odds + arbitrage detection (public API, no key)
   /api/news          -> headlines + sentiment scoring (needs NEWSAPI_KEY)
@@ -11,6 +11,8 @@ Nine routers:
   /api/fundamentals  -> real 10-K/10-Q financials via SEC EDGAR (no key)
   /api/predictions   -> log + compare predictions over time (needs DATABASE_URL)
   /api/paper-trades  -> simulated trades + Call/Put accuracy stats (needs DATABASE_URL)
+  /api/options       -> Options Desk: signals, chains, levels (yfinance; Finnhub/NewsAPI optional)
+  /api/options/trades|stats -> options paper-trade journal + calibration (needs DATABASE_URL)
 
 Run locally:
     uvicorn app.main:app --reload --port 8000
@@ -27,10 +29,10 @@ from dotenv import load_dotenv
 
 load_dotenv()  # reads .env — put NEWSAPI_KEY / FINNHUB_KEY / DATABASE_URL here instead of exporting manually
 
-from app.routers import prices, markets, news, insider, analysts, social, fundamentals, predictions, paper_trades
+from app.routers import prices, markets, news, insider, analysts, social, fundamentals, predictions, paper_trades, options, options_trades
 from app.db import init_db
 
-app = FastAPI(title="SwingIntel API", version="0.3.0")
+app = FastAPI(title="SwingIntel API", version="0.4.0")
 
 # Wide open for local dev. Tighten allow_origins to your actual frontend
 # domain before deploying anywhere real.
@@ -59,6 +61,9 @@ app.include_router(social.router, prefix="/api/social", tags=["social"])
 app.include_router(fundamentals.router, prefix="/api/fundamentals", tags=["fundamentals"])
 app.include_router(predictions.router, prefix="/api/predictions", tags=["predictions"])
 app.include_router(paper_trades.router, prefix="/api/paper-trades", tags=["paper-trades"])
+# Trades router first: its fixed paths (/trades, /stats) must match before options' /{ticker}/... paths.
+app.include_router(options_trades.router, prefix="/api/options", tags=["options-trades"])
+app.include_router(options.router, prefix="/api/options", tags=["options"])
 
 
 @app.get("/api/health")

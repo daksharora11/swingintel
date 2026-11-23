@@ -93,4 +93,46 @@ def init_db():
             # ADD COLUMN IF NOT EXISTS is safe to run on every startup.
             cur.execute("ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS size_usd REAL NOT NULL DEFAULT 1000")
             cur.execute("ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS pnl_usd REAL")
+
+            # Options Desk: daily ATM IV log (builds a real IV rank over time)
+            # and the options paper-trade journal.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS iv_history (
+                    ticker TEXT NOT NULL,
+                    day DATE NOT NULL,
+                    atm_iv REAL NOT NULL,
+                    PRIMARY KEY (ticker, day)
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS option_trades (
+                    id SERIAL PRIMARY KEY,
+                    ticker TEXT NOT NULL,
+                    "right" TEXT NOT NULL CHECK ("right" IN ('call', 'put')),
+                    strike REAL NOT NULL,
+                    expiry DATE NOT NULL,
+                    contracts INTEGER NOT NULL DEFAULT 1,
+                    entry_premium REAL NOT NULL,
+                    entry_underlying REAL,
+                    entry_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    stop_underlying REAL,
+                    target_underlying REAL,
+                    conviction REAL,
+                    factors JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    source TEXT NOT NULL DEFAULT 'model',
+                    notes TEXT,
+                    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed')),
+                    exit_premium REAL,
+                    exit_underlying REAL,
+                    exit_at TIMESTAMPTZ,
+                    exit_reason TEXT,
+                    pnl_usd REAL,
+                    pnl_pct REAL
+                )
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_option_trades_status ON option_trades (status)")
     return True
