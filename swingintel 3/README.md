@@ -134,3 +134,13 @@ http://localhost:8000/api/health.
 Both the backend and frontend were built, linted, and run end-to-end
 before being packaged — see `backend/README.md` for what was specifically
 verified there.
+
+## Options Desk (paper trading)
+
+The **Options Desk** tab scores each ticker as Call, Put or No trade, picks a contract, and gives an entry zone, stop and target. It never places real trades.
+
+- Data is free and delayed. Yahoo option quotes lag about 15 minutes. Every tile shows its data age, and entries are blocked when the market is closed or quotes are stale.
+- `FINNHUB_KEY` improves news and enables insider filings. `NEWSAPI_KEY` is a fallback. Policy headlines use Google News RSS (no key).
+- `DATABASE_URL` is required for the paper journal and for building a real IV rank (one ATM IV reading is stored per ticker per day).
+- The journal grades every trade: win rate by conviction bucket, and which factors earned their weight. Fewer than 30 closed trades is anecdote, not evidence.
+- Backend tests: `cd backend && python -m pytest tests` (set `TEST_DATABASE_URL` to include the database tests).

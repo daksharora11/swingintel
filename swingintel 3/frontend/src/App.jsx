@@ -45,6 +45,7 @@ import {
   Bell,
   Zap,
 } from "lucide-react";
+import OptionsDesk from "./OptionsDesk.jsx";
 
 // ---------------------------------------------------------------------------
 // SwingIntel — live frontend
@@ -955,6 +956,7 @@ export default function SwingIntelApp() {
     { id: "markets", label: "Prediction Markets" },
     { id: "live", label: "Live & Prediction" },
     { id: "paper", label: "Paper Trades" },
+    { id: "options", label: "Options Desk" },
     { id: "backtest", label: "Backtesting" },
   ];
 
@@ -1710,6 +1712,7 @@ export default function SwingIntelApp() {
         </div>
       )}
 
+      {tab === "options" && <OptionsDesk apiBase={API_BASE} tickers={TICKERS} />}
       {tab === "backtest" && <BacktestPanel apiBase={API_BASE} />}
     </div>
   );
