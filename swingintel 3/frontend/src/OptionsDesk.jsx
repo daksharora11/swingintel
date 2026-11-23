@@ -45,6 +45,7 @@ function ConvictionBar({ value, color }) {
 
 function EntryBadge({ d }) {
   if (d.direction === "no_trade") return <span className="text-[10px] text-[#5B6478]">skip</span>;
+  if (!d.expiry?.date) return <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#FBBF241A] text-[#FBBF24]" title={d.meta.chain.error || ""}>NO CHAIN</span>;
   if (!d.meta.market_open) return <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#FBBF241A] text-[#FBBF24]">CLOSED</span>;
   if (!d.actionable) return <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#FBBF241A] text-[#FBBF24]">BLOCKED</span>;
   if (d.plan?.status === "enter_now") return <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#4ADE801A] text-[#4ADE80] font-semibold">ENTER</span>;
@@ -537,7 +538,7 @@ export default function OptionsDesk({ apiBase, tickers }) {
                         <td><span className="text-[11px] font-bold" style={{ color: DIR_COLOR[d.direction] }}>{DIR_LABEL[d.direction]}</span></td>
                         <td className="pr-4"><ConvictionBar value={d.conviction} color={DIR_COLOR[d.direction]} /></td>
                         <td><EntryBadge d={d} /></td>
-                        <td className="mono text-[11px] text-[#D5D9E0]">{d.direction === "no_trade" ? "–" : shortContract(d.contract)}</td>
+                        <td className="mono text-[11px] text-[#D5D9E0]">{d.direction === "no_trade" ? "–" : !d.expiry?.date ? "chain unavailable" : shortContract(d.contract)}</td>
                         <td className="mono">{d.plan ? d.plan.reward_risk.toFixed(1) : "–"}</td>
                         <td className="mono text-[11px]" style={{ color: d.volatility.iv_expensive ? "#FBBF24" : "#8B93A7" }}>{d.volatility.atm_iv ? (d.volatility.atm_iv * 100).toFixed(0) + "%" : "–"}</td>
                         <td className="text-[10px] text-[#FBBF24]">{d.earnings.in_window ? "EARNINGS " : ""}{d.volatility.iv_expensive ? "RICH-IV" : ""}</td>
