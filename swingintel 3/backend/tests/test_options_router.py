@@ -182,3 +182,28 @@ def test_stats_calibration_and_factors():
     assert tr["aligned"]["n"] == 3 and tr["aligned"]["win_rate"] == 100.0 and tr["not_aligned"]["n"] == 2
     assert s["equity"][-1]["pnl"] == -10.0 and s["profit_factor"] == round(90 / 100, 2)
     assert ot.compute_stats([])["n"] == 0
+
+
+def test_tradier_parsers_handle_single_and_list(monkeypatch):
+    from app.routers import options as o
+    monkeypatch.setenv("TRADIER_TOKEN", "x")
+
+    def fake(path, params):
+        if "expirations" in path:
+            return {"expirations": {"date": "2026-12-18"}}  # single result comes back as a dict value
+        return {"options": {"option": {"symbol": "AAPL261218C00200000", "option_type": "call", "strike": 200,
+                                        "bid": 1.0, "ask": 1.2, "last": 1.1, "volume": 10, "open_interest": 50,
+                                        "expiration_date": "2026-12-18", "greeks": {"mid_iv": 0.3}}}}
+    monkeypatch.setattr(o, "_tradier_get", fake)
+    assert o._tradier_expirations("AAPL") == ["2026-12-18"]
+    rows = o._tradier_chain("AAPL", "2026-12-18")
+    assert len(rows) == 1 and rows[0]["right"] == "call" and rows[0]["iv"] == 0.3 and rows[0]["oi"] == 50
+
+
+def test_expirations_report_error_when_all_providers_fail(monkeypatch):
+    from app.routers import options as o
+    monkeypatch.delenv("TRADIER_TOKEN", raising=False)
+    monkeypatch.setattr(o, "_yahoo_expirations", lambda t: (_ for _ in ()).throw(RuntimeError("blocked")))
+    o._cache.clear()
+    exps, _ = o.get_expirations("ZZZZ", refresh=True)
+    assert exps == [] and "blocked" in o._chain_errors["ZZZZ"]

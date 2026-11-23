@@ -463,7 +463,7 @@ def decide(comp: dict, factors: dict[str, dict], ctx: dict) -> dict:
 
     conviction = 0.0
     if direction != "no_trade":
-        conviction = min(1.0, abs(comp["score"]) / 0.6) * (0.5 + 0.5 * comp["agreement"])
+        conviction = min(1.0, abs(comp["score"]) / 0.8) * (0.5 + 0.5 * comp["agreement"])
         if ctx.get("iv_expensive"):
             conviction *= 0.85
             warnings.append("Options are expensive versus their own history, so long premium needs a bigger move to pay")

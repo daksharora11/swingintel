@@ -66,6 +66,8 @@ def cached(key: str, ttl: float, fn, refresh: bool = False):
             return hit[0], hit[1]
         raise
     ts = time.time()
+    if isinstance(val, list) and not val and ttl > 120:
+        ts -= ttl - 120  # an empty result is retried after 2 minutes, not held for the full TTL
     with _lock:
         _cache[key] = (val, ts)
     return val, ts
@@ -119,31 +121,106 @@ def get_intraday(ticker: str, refresh=False):
     return cached(f"i:{ticker}", 45, go, refresh)
 
 
-def get_expirations(ticker: str, refresh=False):
-    return cached(f"x:{ticker}", 600, lambda: list(yf.Ticker(ticker).options or []), refresh)
+# ---- Option chain providers -------------------------------------------------
+# Yahoo often refuses option requests from cloud server IPs (Render included), while
+# price history still works. If TRADIER_TOKEN is set (free sandbox account, 15 minute
+# delayed data with greeks) it is tried first, and Yahoo is the fallback.
+TRADIER_BASE = "https://sandbox.tradier.com/v1"
+_chain_errors: dict[str, str] = {}
+_provider_used: dict[str, str] = {}
 
 
-def _rows_from_df(df, right: str, expiry: str) -> list[dict]:
+def tradier_configured() -> bool:
+    return bool(os.environ.get("TRADIER_TOKEN"))
+
+
+def _tradier_get(path: str, params: dict) -> dict:
+    base = os.environ.get("TRADIER_BASE_URL", TRADIER_BASE)
+    r = requests.get(f"{base}{path}", params=params, timeout=12,
+                     headers={"Authorization": f"Bearer {os.environ['TRADIER_TOKEN']}", "Accept": "application/json"})
+    r.raise_for_status()
+    return r.json()
+
+
+def _as_list(x) -> list:
+    if x is None:
+        return []
+    return x if isinstance(x, list) else [x]
+
+
+def _tradier_expirations(ticker: str) -> list[str]:
+    j = _tradier_get("/markets/options/expirations", {"symbol": ticker, "includeAllRoots": "true"})
+    return sorted(str(d) for d in _as_list((j.get("expirations") or {}).get("date")))
+
+
+def _tradier_chain(ticker: str, expiry: str) -> list[dict]:
+    j = _tradier_get("/markets/options/chains", {"symbol": ticker, "expiration": expiry, "greeks": "true"})
     out = []
-    for r in df.to_dict("records"):
-        lt = r.get("lastTradeDate")
-        try:
-            lt_iso = lt.to_pydatetime().astimezone(timezone.utc).isoformat() if lt is not None and lt == lt else None
-        except Exception:
-            lt_iso = None
+    for o in _as_list((j.get("options") or {}).get("option")):
+        g = o.get("greeks") or {}
+        iv = _f(g.get("mid_iv")) or _f(g.get("smv_vol")) or None
+        td = _f(o.get("trade_date"))
         out.append({
-            "right": right, "strike": _f(r.get("strike")), "expiry": expiry,
-            "bid": _f(r.get("bid")) or 0.0, "ask": _f(r.get("ask")) or 0.0, "last": _f(r.get("lastPrice")) or 0.0,
-            "volume": int(_f(r.get("volume")) or 0), "oi": int(_f(r.get("openInterest")) or 0),
-            "iv": _f(r.get("impliedVolatility")), "last_trade": lt_iso, "contract_symbol": r.get("contractSymbol"),
+            "right": o.get("option_type"), "strike": _f(o.get("strike")), "expiry": o.get("expiration_date") or expiry,
+            "bid": _f(o.get("bid")) or 0.0, "ask": _f(o.get("ask")) or 0.0, "last": _f(o.get("last")) or 0.0,
+            "volume": int(_f(o.get("volume")) or 0), "oi": int(_f(o.get("open_interest")) or 0), "iv": iv,
+            "last_trade": datetime.fromtimestamp(td / 1000, timezone.utc).isoformat() if td else None,
+            "contract_symbol": o.get("symbol"),
         })
-    return [x for x in out if x["strike"] is not None]
+    return [r for r in out if r["strike"] is not None and r["right"] in ("call", "put")]
+
+
+def _yahoo_expirations(ticker: str) -> list[str]:
+    exps = list(yf.Ticker(ticker).options or [])
+    if not exps:
+        raise RuntimeError("Yahoo returned no option expirations (it often blocks cloud server IPs)")
+    return exps
+
+
+def _yahoo_chain(ticker: str, expiry: str) -> list[dict]:
+    ch = yf.Ticker(ticker).option_chain(expiry)
+    return _rows_from_df(ch.calls, "call", expiry) + _rows_from_df(ch.puts, "put", expiry)
+
+
+def _providers(kind: str):
+    p = []
+    if tradier_configured():
+        p.append(("tradier", _tradier_expirations if kind == "x" else _tradier_chain))
+    p.append(("yahoo", _yahoo_expirations if kind == "x" else _yahoo_chain))
+    return p
+
+
+def get_expirations(ticker: str, refresh=False):
+    def go():
+        errors = []
+        for name, fn in _providers("x"):
+            try:
+                exps = fn(ticker)
+                if exps:
+                    _provider_used[ticker] = name
+                    _chain_errors.pop(ticker, None)
+                    return exps
+            except Exception as e:
+                errors.append(f"{name}: {str(e)[:160]}")
+        _chain_errors[ticker] = "; ".join(errors) or "no option data"
+        return []
+    return cached(f"x:{ticker}", 600, go, refresh)
 
 
 def get_chain(ticker: str, expiry: str, refresh=False):
     def go():
-        ch = yf.Ticker(ticker).option_chain(expiry)
-        return _rows_from_df(ch.calls, "call", expiry) + _rows_from_df(ch.puts, "put", expiry)
+        order = _providers("c")
+        used = _provider_used.get(ticker)
+        order.sort(key=lambda p: p[0] != used)  # keep using the provider that gave the expirations
+        last = None
+        for name, fn in order:
+            try:
+                rows = fn(ticker, expiry)
+                if rows:
+                    return rows
+            except Exception as e:
+                last = e
+        raise last or RuntimeError("empty option chain")
     return cached(f"c:{ticker}:{expiry}", 90, go, refresh)
 
 
@@ -405,7 +482,12 @@ def compute_signal(ticker: str, dte_min: int = 14, dte_max: int = 45, refresh: b
                 vwap = sum((intra["h"][i] + intra["l"][i] + intra["c"][i]) / 3 * intra["v"][i] for i in idx) / vol
 
         # Options
-        exps, _ = get_expirations(ticker, refresh)
+        try:
+            exps, _ = get_expirations(ticker, refresh)
+        except Exception as e:
+            exps = []
+            _chain_errors[ticker] = str(e)[:200]
+        chain_error = None if exps else (_chain_errors.get(ticker) or "no option expirations returned")
         expiry = choose_expiry(exps, now, dte_min, dte_max) if exps else None
         chain_rows, c_ts, atm, T, dte, pc, walls, pain, flow = [], None, {}, None, None, {}, {}, None, {"items": [], "count": 0, "bias": 0.0, "directional_notional": 0}
         if expiry:
@@ -480,6 +562,9 @@ def compute_signal(ticker: str, dte_min: int = 14, dte_max: int = 45, refresh: b
     }
     dec = oe.decide(comp, factors, ctx)
 
+    if not exps and dec["direction"] != "no_trade":
+        dec["actionable"] = False
+        dec["warnings"].append(f"Options chain unavailable ({chain_error}). This is a directional view only, so no contract can be picked")
     plan = contract = None
     if dec["direction"] != "no_trade" and atr_v and expiry and T:
         plan = oe.trade_plan(dec["direction"], spot, atr_v, levels["supports"], levels["resistances"], atm.get("expected_move"), rsi_v)
@@ -503,6 +588,7 @@ def compute_signal(ticker: str, dte_min: int = 14, dte_max: int = 45, refresh: b
             "market_open": is_open,
             "quote": {**quote_fresh, "as_of": quote_ts.isoformat()},
             "chain": {"age_s": None if chain_age is None else int(chain_age), "fetched_at": _iso(c_ts),
+                      "provider": _provider_used.get(ticker), "error": chain_error,
                       "note": "Yahoo options data is typically delayed about 15 minutes"},
             "news": {"fetched_at": _iso(n_ts), "source": news_pack["source"]},
             "political": {"fetched_at": _iso(p_ts), "sources": pol_pack["sources"]},
@@ -546,6 +632,25 @@ def get_regime(refresh: bool = False):
     except Exception:
         vix = {"c": []}
     return {**oe.regime(spy["c"], vix["c"]), "as_of": _iso(s_ts)}
+
+
+@router.get("/diag/{ticker}")
+def diagnostics(ticker: str):
+    """Why is option data missing? Tries each provider once and reports what happened."""
+    t = ticker.upper()
+    out: dict = {"tradier_configured": tradier_configured(), "providers": {}}
+    for name, fn in _providers("x"):
+        try:
+            e = fn(t)
+            out["providers"][name] = {"ok": bool(e), "expirations": len(e), "first": e[:3]}
+        except Exception as ex:
+            out["providers"][name] = {"ok": False, "error": str(ex)[:300]}
+    try:
+        r = requests.get(f"https://query2.finance.yahoo.com/v7/finance/options/{t}", timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+        out["yahoo_raw_http_status"] = r.status_code
+    except Exception as ex:
+        out["yahoo_raw_http_status"] = f"error: {str(ex)[:120]}"
+    return out
 
 
 @router.get("/{ticker}/signal")
